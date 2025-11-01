@@ -19,27 +19,45 @@ from datetime import datetime
 from scipy import stats
 
 
-def test_asymmetry_significance(up_responses: np.ndarray, down_responses: np.ndarray) -> bool:
+def test_asymmetry_significance(analyzer: BTCImpactAnalyzer,
+                                ref_returns: np.ndarray,
+                                target_returns: np.ndarray,
+                                threshold: float) -> bool:
     """
     Statistical test to validate if asymmetry pattern is statistically significant
-
-    What it does:
-    - Performs t-test to check if the difference between up and down responses is real
-    - Ensures we have enough data points for reliable testing
-    - Provides statistical confidence for asymmetry patterns
+    - FIXED: Now uses conditional response analysis to get actual response arrays
 
     Args:
-        up_responses: Array of returns during reference asset UP movements
-        down_responses: Array of returns during reference asset DOWN movements
+        analyzer: BTCImpactAnalyzer instance
+        ref_returns: Reference asset returns
+        target_returns: Target asset returns
+        threshold: Event threshold
 
     Returns:
         bool: True if asymmetry is statistically significant (p < 0.05)
     """
-    # Need sufficient data for reliable statistical test
-    if len(up_responses) > 10 and len(down_responses) > 10:
-        t_stat, p_value = stats.ttest_ind(up_responses, down_responses)
-        return p_value < 0.05  # Significant at 95% confidence level
-    return False
+    try:
+        # Alternative approach: manually extract responses for events
+        up_events_mask = ref_returns > threshold
+        down_events_mask = ref_returns < -threshold
+
+        up_responses = target_returns[up_events_mask]
+        down_responses = target_returns[down_events_mask]
+
+        # Filter out NaN values
+        up_responses = up_responses[~np.isnan(up_responses)]
+        down_responses = down_responses[~np.isnan(down_responses)]
+
+        # Need sufficient data for reliable statistical test
+        if len(up_responses) > 10 and len(down_responses) > 10:
+            t_stat, p_value = stats.ttest_ind(up_responses, down_responses)
+            return p_value < 0.05  # Significant at 95% confidence level
+
+        return False
+
+    except Exception as e:
+        print(f"Warning: Asymmetry test failed: {e}")
+        return False
 
 
 def filter_outliers_robust(data: np.ndarray, lower_percentile: float = 5, upper_percentile: float = 95) -> np.ndarray:
@@ -582,17 +600,25 @@ def render():
                         st.metric("Asymmetry Ratio", f"{result.asymmetry_ratio:.2f}")
 
                     # IMPROVEMENT: Statistical validation of asymmetry patterns
-                    if (result.asymmetry_ratio > 1.2 and
-                            test_asymmetry_significance(result.up_responses, result.down_responses)):
-                        st.warning(
-                            "⚠️ **Statistically Significant Bearish Asymmetry**: Stronger response to DOWN moves")
-                    elif (result.asymmetry_ratio < 0.8 and
-                          test_asymmetry_significance(result.up_responses, result.down_responses)):
-                        st.info("ℹ️ **Statistically Significant Bullish Asymmetry**: Stronger response to UP moves")
-                    elif result.asymmetry_ratio > 1.2:
-                        st.warning("⚠️ **Potential Bearish Asymmetry**: Appears stronger on DOWN moves")
-                    elif result.asymmetry_ratio < 0.8:
-                        st.info("ℹ️ **Potential Bullish Asymmetry**: Appears stronger on UP moves")
+                    if asset_name in individual_dfs:
+                        pair_df = individual_dfs[asset_name]
+                        ref_returns = pair_df[f"{reference_asset}_returns"].to_numpy()
+                        target_returns = pair_df[f"{asset_name}_returns"].to_numpy()
+
+                        analyzer_temp = BTCImpactAnalyzer(reference_asset)
+                        is_significant = test_asymmetry_significance(
+                            analyzer_temp, ref_returns, target_returns, threshold
+                        )
+
+                        if (result.asymmetry_ratio > 1.2 and is_significant):
+                            st.warning(
+                                "⚠️ **Statistically Significant Bearish Asymmetry**: Stronger response to DOWN moves")
+                        elif (result.asymmetry_ratio < 0.8 and is_significant):
+                            st.info("ℹ️ **Statistically Significant Bullish Asymmetry**: Stronger response to UP moves")
+                        elif result.asymmetry_ratio > 1.2:
+                            st.warning("⚠️ **Potential Bearish Asymmetry**: Appears stronger on DOWN moves")
+                        elif result.asymmetry_ratio < 0.8:
+                            st.info("ℹ️ **Potential Bullish Asymmetry**: Appears stronger on UP moves")
 
         with tab4:
             st.markdown("### 🔍 Advanced Pattern Detection")
@@ -611,9 +637,18 @@ def render():
                     patterns_found.append("🔥 **Overreaction**: Moves more than expected based on beta")
 
                 # Bearish asymmetry (statistically validated)
-                if (result.asymmetry_ratio > 1.2 and
-                        test_asymmetry_significance(result.up_responses, result.down_responses)):
-                    patterns_found.append("⚠️ **Bearish Asymmetry**: Statistically stronger response to declines")
+                if asset_name in individual_dfs:
+                    pair_df = individual_dfs[asset_name]
+                    ref_returns = pair_df[f"{reference_asset}_returns"].to_numpy()
+                    target_returns = pair_df[f"{asset_name}_returns"].to_numpy()
+
+                    analyzer_temp = BTCImpactAnalyzer(reference_asset)
+                    is_significant = test_asymmetry_significance(
+                        analyzer_temp, ref_returns, target_returns, threshold
+                    )
+
+                    if (result.asymmetry_ratio > 1.2 and is_significant):
+                        patterns_found.append("⚠️ **Bearish Asymmetry**: Statistically stronger response to declines")
 
                 # High sensitivity pattern
                 if result.beta > 1.3:
